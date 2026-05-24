@@ -1,0 +1,15 @@
+[
+  {"path": ".claude/agents/correctness-reviewer.md", "classification": "docs / comments"},
+  {"path": ".claude/agents/data-leakage-reviewer.md", "classification": "docs / comments"},
+  {"path": ".claude/agents/domain-invariant-reviewer.md", "classification": "docs / comments"},
+  {"path": ".claude/agents/false-positive-validator.md", "classification": "docs / comments"},
+  {"path": ".claude/agents/metric-validity-reviewer.md", "classification": "docs / comments"},
+  {"path": ".claude/agents/missed-bug-hunter.md", "classification": "docs / comments"},
+  {"path": ".claude/agents/submission-contract-reviewer.md", "classification": "docs / comments"},
+  {"path": ".claude/agents/test-coverage-reviewer.md", "classification": "docs / comments"},
+  {"path": ".claude/hooks/script_run_gate.py", "classification": "harness / safety / gate"},
+  {"path": ".claude/hooks/stop_deep_review_gate.py", "classification": "harness / safety / gate"},
+  {"path": ".claude/settings (2).json", "classification": "config / CI"},
+  {"path": ".claude/skills/deep-pr-review/SKILL.md", "classification": "docs / comments"},
+  {"path": ".claude/skills/deep-script-review/SKILL.md", "classification": "docs / comments"}
+]

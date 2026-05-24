@@ -1,0 +1,102 @@
+[
+  {
+    "id": "F001",
+    "severity": "HIGH",
+    "file": ".claude/settings (2).json",
+    "function_or_section": "hooks configuration",
+    "claim": "Hooks are configured in a non-canonical settings file name, so Claude Code won't load them.",
+    "symptom": "PreToolUse/Stop/SubagentStop gates never execute; deep-review and script-run safeguards silently inactive.",
+    "trigger": "Any session relying on hooks in .claude/settings (2).json without merging into .claude/settings.json.",
+    "evidence": [
+      {
+        "file": ".claude/settings (2).json",
+        "snippet": "\"hooks\": {\n  \"PreToolUse\": [ ... ],\n  \"Stop\": [ ... ],\n  \"SubagentStop\": [ ... ]\n}",
+        "why_it_matters": "Claude Code settings are read from .claude/settings.json; a renamed copy won't be loaded, so hooks are inert."
+      }
+    ],
+    "fix_sketch": "Move hook configuration into .claude/settings.json or rename the file to settings.json.",
+    "test_gap": "No automated check ensures hooks are loaded from the canonical settings file."
+  },
+  {
+    "id": "F002",
+    "severity": "HIGH",
+    "file": ".claude/hooks/script_run_gate.py",
+    "function_or_section": "parse_python_invocation",
+    "claim": "The python-run gate can be bypassed via interpreter flags or versioned executables.",
+    "symptom": "Unreviewed scripts can run by invoking `python -u script.py` or `python3.11 script.py`.",
+    "trigger": "Any Bash command where python flags appear before the script or the interpreter is versioned (python3.X).",
+    "evidence": [
+      {
+        "file": ".claude/hooks/script_run_gate.py",
+        "snippet": "m = re.search(r\"\\bpython(?:3)?(?:\\.exe)?\\s+(.+)\", cmd)\nrest = m.group(1).strip()\nif rest.startswith(\"-c\") or rest.startswith(\"-m\") or rest.startswith(\"--\") or rest.startswith(\"-h\"): return None\nfirst = rest.split()[0].strip(\"\\\"'\")\nif not first.endswith(\".py\"): return None",
+        "why_it_matters": "Flags before the script make `first` a flag, and python3.11 does not match the regex, so the gate returns None and allows execution."
+      }
+    ],
+    "fix_sketch": "Use shlex.split to parse, skip interpreter flags until the first non-flag token, and accept python3.X interpreter names.",
+    "test_gap": "No tests cover flag-prefixed invocations or python3.X executables."
+  },
+  {
+    "id": "F003",
+    "severity": "MEDIUM",
+    "file": ".claude/hooks/script_run_gate.py",
+    "function_or_section": "review validation",
+    "claim": "The gate does not enforce the deep-script-review recency/modified-since requirement.",
+    "symptom": "Stale PASS reviews allow running modified scripts without re-review.",
+    "trigger": "A script changes after a PASS review or a review older than 30 days.",
+    "evidence": [
+      {
+        "file": ".claude/skills/deep-script-review/SKILL.md",
+        "snippet": "The review was written within the last 30 days (re-review if older or script modified since)",
+        "why_it_matters": "The documented gate requires freshness checks, but the hook only checks PASS marker."
+      },
+      {
+        "file": ".claude/hooks/script_run_gate.py",
+        "snippet": "ok, reason = review_passes(review)\nif not ok: ...\nreturn 0",
+        "why_it_matters": "No timestamp or script-modified-since checks are performed."
+      }
+    ],
+    "fix_sketch": "Compare review mtime and script mtime; block if review older than 30 days or script newer than review.",
+    "test_gap": "No tests for stale review enforcement."
+  },
+  {
+    "id": "F004",
+    "severity": "MEDIUM",
+    "file": ".claude/hooks/stop_deep_review_gate.py",
+    "function_or_section": "REQUIRED_SECTIONS",
+    "claim": "The stop hook does not enforce all sections required by deep-pr-review SKILL.md.",
+    "symptom": "A REVIEW_REPORT.md missing Base branch / Files reviewed / Confirmed findings can still pass the stop gate.",
+    "trigger": "Deep review report missing those sections.",
+    "evidence": [
+      {
+        "file": ".claude/skills/deep-pr-review/SKILL.md",
+        "snippet": "REVIEW_REPORT.md must contain sections: Scope reviewed, Base branch, Diff source, Files reviewed, Commands run, Subagents used, Confirmed findings, Verified-clean, Dropped candidate findings, Residual risk",
+        "why_it_matters": "Skill mandates sections that are not enforced by the stop hook."
+      },
+      {
+        "file": ".claude/hooks/stop_deep_review_gate.py",
+        "snippet": "REQUIRED_SECTIONS = [\"Scope reviewed\", \"Diff source\", \"Commands run\", \"Subagents used\", \"Verified-clean\", \"Dropped candidate findings\", \"Residual risk\"]",
+        "why_it_matters": "Base branch, Files reviewed, Confirmed findings are omitted, weakening the gate."
+      }
+    ],
+    "fix_sketch": "Add the missing sections to REQUIRED_SECTIONS to match SKILL.md.",
+    "test_gap": "No tests ensure section list matches the skill spec."
+  },
+  {
+    "id": "F005",
+    "severity": "MEDIUM",
+    "file": ".claude/hooks/script_run_gate.py / .claude/hooks/stop_deep_review_gate.py",
+    "function_or_section": "test coverage",
+    "claim": "New gate hooks were introduced without tests to prevent regressions in allow/block logic.",
+    "symptom": "Future changes could silently break gating behavior.",
+    "trigger": "Any refactor of hook logic without tests.",
+    "evidence": [
+      {
+        "file": "review/full_diff.patch",
+        "snippet": "Only new files under .claude/hooks were added; no tests were added in the diff.",
+        "why_it_matters": "Critical gating logic lacks regression coverage."
+      }
+    ],
+    "fix_sketch": "Add unit tests for parse/allow/block cases and stop-hook section enforcement.",
+    "test_gap": "All gate logic currently untested."
+  }
+]

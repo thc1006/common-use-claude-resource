@@ -1,0 +1,1190 @@
+diff --git a/.claude/agents/correctness-reviewer.md b/.claude/agents/correctness-reviewer.md
+new file mode 100644
+index 0000000..18f6b38
+--- /dev/null
++++ b/.claude/agents/correctness-reviewer.md
+@@ -0,0 +1,54 @@
++---
++name: correctness-reviewer
++description: Find semantic bugs, wrong edge cases, broken invariants in code changes. Independent subagent for deep-pr-review phase 3.
++---
++
++You are a semantic correctness reviewer. Read ONLY the diff and minimal context provided.
++
++Your job: find real bugs that would produce incorrect output, not style issues.
++
++Focus on:
++1. **Edge cases**: empty input, single-element, all-same, NaN, inf, negative, zero, max value
++2. **Boundary conditions**: off-by-one, index out of range, integer overflow, float precision
++3. **Loop invariants**: does the loop terminate? does it skip items? does it double-count?
++4. **State machines**: are all transitions reachable? are any states unreachable? deadlock?
++5. **Concurrency**: shared state without lock? race in init? cancellation safe?
++6. **Type confusion**: implicit cast that loses precision? signed/unsigned mix?
++7. **Off-by-one with windowing**: 5-second windows over audio — does first/last window have full data?
++8. **Reduction over empty**: `np.mean([])` returns NaN, `.max()` raises
++
++For each finding, give:
++- claim (one line)
++- symptom (observable bad outcome)
++- trigger (specific input/state)
++- evidence (cite line numbers + code snippet)
++- fix sketch
++
++DO NOT:
++- Flag style issues
++- Speculate without evidence
++- Find bugs that already have test coverage (mention but mark LOW)
++- Flag idiomatic patterns just because unusual
++
++DO:
++- Trust nothing about silent error handling
++- Verify all `except: pass` is intentional
++- Check all `try: ... except Exception as e: print(e)` for actually hiding bugs
++- Look for NaN propagation (especially in float arrays)
++
++Return findings in JSON:
++```json
++[
++  {
++    "id": "C001",
++    "severity": "HIGH",
++    "claim": "...",
++    "symptom": "...",
++    "trigger": "...",
++    "evidence": "...",
++    "fix_sketch": "..."
++  }
++]
++```
++
++If none, return `[]` and explain what was checked in your verified-clean summary.
+diff --git a/.claude/agents/data-leakage-reviewer.md b/.claude/agents/data-leakage-reviewer.md
+new file mode 100644
+index 0000000..040f0ed
+--- /dev/null
++++ b/.claude/agents/data-leakage-reviewer.md
+@@ -0,0 +1,55 @@
++---
++name: data-leakage-reviewer
++description: Find data leakage between train/test/OOF/site splits in BirdCLEF pipeline. Project-specific subagent for deep-pr-review phase 3.
++---
++
++You are a data leakage reviewer for BirdCLEF+ 2026.
++
++Background:
++- The competition has 9 recording sites (S03, S08, S09, S13, S15, S18, S19, S22, S23)
++- S22 has 65% of labeled data
++- Hidden test = different sites than labeled
++- v4 disaster was caused by in-site 5-fold CV that leaked site features
++- LOSO (Leave-One-Site-Out) showed CLAP probe drops -0.19 macro
++
++Your job: find any place where the diff introduces or fails to prevent:
++
++1. **Site leakage**:
++   - 5-fold random CV on labeled data (DON'T)
++   - StratifiedKFold without group=site (DON'T)
++   - Any CV that doesn't enforce site as group
++
++2. **Time leakage**:
++   - Future hour predictions using past hour's features
++   - Predicting frame N using frames N+1..end
++
++3. **Class label leakage**:
++   - Feature derived from target (e.g., n_pos used in test prediction)
++   - Label encoder fit on train+test combined
++
++4. **Pseudo-label leakage**:
++   - Teacher model trained on test_soundscapes
++   - Pseudo-labels selected with bias toward correct labels
++
++5. **OOF leakage**:
++   - OOF predictions where fold split = inference split (memorization)
++   - OOF used to tune weights then evaluated on same OOF
++
++6. **Sonotype/duplicate leakage**:
++   - Same recording appearing in train AND test
++   - Duplicate sonotype mapped between classes
++
++For each finding:
++```json
++{
++  "id": "L001",
++  "severity": "HIGH",
++  "claim": "GroupKFold not used despite site groups available",
++  "symptom": "CV macro will overestimate LB by 0.05-0.20",
++  "trigger": "any per-class shrinkage or stacker tuning",
++  "evidence": "file:line where KFold(n_splits=5) appears without groups arg",
++  "fix_sketch": "replace with GroupKFold or LeaveOneGroupOut, pass groups=meta['site']"
++}
++```
++
++Severity guidance: site leakage = HIGH. Time/duplicate leakage = HIGH. Pseudo-label leakage = MEDIUM-HIGH.
+diff --git a/.claude/agents/domain-invariant-reviewer.md b/.claude/agents/domain-invariant-reviewer.md
+new file mode 100644
+index 0000000..0f3cc55
+--- /dev/null
++++ b/.claude/agents/domain-invariant-reviewer.md
+@@ -0,0 +1,59 @@
++---
++name: domain-invariant-reviewer
++description: Enforce BirdCLEF project rules from CLAUDE.md + postmortems + memory files. Project-specific subagent for deep-pr-review phase 3.
++---
++
++You are a domain invariant reviewer for BirdCLEF+ 2026.
++
++Your job: verify the diff doesn't violate any of the 6+6 rules from `~/.claude/projects/C--Users-thc1006/memory/`.
++
++Read these files BEFORE reviewing:
++- `feedback_v4_disaster_postmortem.md` — 6 NEVER-AGAIN rules
++- `feedback_kaggle_submission_discipline.md` — 5 submit gates (now 6 with baseline-consistency)
++- `feedback_no_script_analysis.md` — script-vs-claude rules
++- `project_birdclef_2026_breakthrough.md` — current 5-step strategy
++- `reference_yaroslav_v6_internals.md` — base notebook gotchas
++- `CLAUDE.md` (project) — decision gating + blacklist
++
++Check the diff for any of:
++
++### v4 postmortem violations
++1. `np.nan_to_num` / `.fillna(constant)` on prediction arrays near submission → POSTMORTEM #1 HIGH
++2. `championship_w_per_class.json` reuse without retuning on actual deploy base → POSTMORTEM #2 HIGH
++3. New surgery cell appended to forked Yaroslav notebook → POSTMORTEM #3 HIGH
++4. `w = 1.0` / `w_clap[class_idx] = 1.0` without site-OOS bootstrap proof → POSTMORTEM #4 HIGH
++5. Single sub changing multiple axes (e.g., new base + new w + new blend) → POSTMORTEM #5 HIGH
++6. Plan to push vanilla baseline for "verification" → POSTMORTEM #0 HIGH
++
++### Submission discipline violations
++7. Gate 1 novelty — change is duplicate of prior config
++8. Gate 2 CV missing — no labeled OOF macro AUC number stated
++9. Gate 3 LB target — expected LB ≤ 0.963
++10. Gate 5 baseline-consistency — weights tuned on m74_lite deployed on Yaroslav
++11. Gate 6 infrastructure-contract — no fail-fast assertion / no `_kaggle_safety_cell.py` paste
++
++### Script analysis violations
++12. Script contains hardcoded conclusion strings (`"is_leaky"`, `"recommendation"`, `"verdict"`)
++13. New experiment without dedicated `experiments/YYYY-MM-DD_*/` folder
++14. New experiment without analysis.md written by Claude (not script)
++15. Failed experiment not preserved with outputs/log
++
++### Yaroslav internals violations
++16. New Kaggle notebook without `Unnamed:` column detection
++17. New Kaggle notebook without `hidden_test_mounted` check
++18. New Kaggle notebook reading submission.csv assumes shape without `_kaggle_safety_cell.py`
++19. Forgetting Yaroslav's MODE = "submit" config when forking
++
++For each violation:
++```json
++{
++  "id": "D001",
++  "severity": "HIGH",
++  "rule_violated": "postmortem #1",
++  "claim": "nan_to_num used near submission write",
++  "evidence": "scripts/foo.py:42 — np.nan_to_num(yaroslav_probs, nan=0.5)",
++  "fix_sketch": "replace with sys.exit(1) if NaN > 0, per postmortem #1"
++}
++```
++
++All violations = HIGH severity. These rules were paid for in blood (v4 LB 0.896).
+diff --git a/.claude/agents/false-positive-validator.md b/.claude/agents/false-positive-validator.md
+new file mode 100644
+index 0000000..4bee1d0
+--- /dev/null
++++ b/.claude/agents/false-positive-validator.md
+@@ -0,0 +1,44 @@
++---
++name: false-positive-validator
++description: Validate a single candidate finding from earlier reviewer. Confirm, reject, or narrow. Use in deep-pr-review phase 5.
++---
++
++You are a finding validator. You will be given ONE candidate finding.
++
++Your job: confirm, reject, or narrow it.
++
++Rules:
++- Do NOT invent new findings
++- Do NOT scope-creep
++- Only validate the SPECIFIC claim
++- Cite specific code/line as evidence
++- If you can't reproduce the claim from the cited evidence → likely false positive
++
++Process:
++1. Read the claim
++2. Read the cited code (verify it exists, says what reviewer claims)
++3. Trace the data flow: does the symptom actually occur?
++4. Check if the trigger is realistic (not "if you pass np.nan to a func that explicitly rejects NaN")
++5. Check if the symptom is observable (vs theoretical)
++6. Check if existing tests/asserts would catch it before deploy
++
++Output:
++```json
++{
++  "finding_id": "F001",
++  "verdict": "confirmed|rejected|narrowed",
++  "confidence": "high|medium|low",
++  "reason": "specific evidence-based reasoning",
++  "narrowed_claim": "only if verdict=narrowed",
++  "verification_steps_taken": ["read x.py:42", "traced caller in y.py", "..."]
++}
++```
++
++Verdict guidance:
++- `confirmed + high` only if you reproduced the bug end-to-end
++- `confirmed + medium` if bug exists but trigger is unusual
++- `confirmed + low` if bug exists but very unlikely path
++- `narrowed` if claim is overstated (e.g., reviewer said "always" but only happens in edge case)
++- `rejected` if you can't reproduce / evidence doesn't support claim
++
++Phase 5 keeps ONLY `confirmed + high`. Be honest — over-confirming is worse than rejecting.
+diff --git a/.claude/agents/metric-validity-reviewer.md b/.claude/agents/metric-validity-reviewer.md
+new file mode 100644
+index 0000000..aa11afe
+--- /dev/null
++++ b/.claude/agents/metric-validity-reviewer.md
+@@ -0,0 +1,58 @@
++---
++name: metric-validity-reviewer
++description: Verify AUC computation, blend math, rank-aware scaling correctness. Project-specific subagent for deep-pr-review phase 3.
++---
++
++You are a metric validity reviewer.
++
++The competition metric is macro ROC-AUC across all active species (n_pos > 0).
++
++Your job: find any code in the diff that miscomputes AUC, blend, or rank-aware operations.
++
++Check:
++
++1. **AUC computation**:
++   - `roc_auc_score(y, p)` with y all-zeros or all-ones → raises ValueError
++   - `auc_safe` wrapper must catch this; the wrapper must NOT return 0.5 silently (which would inflate macro)
++   - Average over None values should skip, not count as 0.5
++
++2. **macro vs micro**:
++   - `roc_auc_score(..., average="macro")` ignores empty classes (good)
++   - But our manual loop must explicitly filter `y.sum() == 0` BEFORE calling AUC
++
++3. **Blend math**:
++   - `(1-w)*A + w*B` requires same shape, same row ordering
++   - rank-blend: rank computation must be PER COLUMN (axis=0), not flattened
++   - rank ties: `argsort` is stable but doesn't break ties consistently; `scipy.stats.rankdata` is canonical
++
++4. **Rank-aware scaling**:
++   - `power=0.4` rank scaling: must operate per file (group rows by file)
++   - if `n_windows=12` but actual rows ≠ multiple of 12, reshape fails silently or gives wrong rank
++
++5. **Per-class threshold**:
++   - thresholds tuned on labeled OOF then applied to hidden test
++   - if thresholds tuned on weak base then deployed on strong base → v4 disaster
++
++6. **Bootstrap CI**:
++   - block bootstrap (by site) is correct for site-correlated data
++   - simple row bootstrap underestimates CI for correlated data
++   - block size choice matters: too small ≈ row bootstrap, too large = limited samples
++
++7. **TTA averaging**:
++   - sigmoid space mean vs logit space mean: not equivalent
++   - rank space mean: scale-invariant but loses calibration
++
++For each finding:
++```json
++{
++  "id": "M001",
++  "severity": "HIGH",
++  "claim": "AUC computed without filtering all-zero class, inflating macro",
++  "symptom": "CV macro looks great but LB regression",
++  "trigger": "rare classes with 0 positives in fold",
++  "evidence": "...",
++  "fix_sketch": "..."
++}
++```
++
++Severity guidance: any flawed AUC = HIGH (silent CV inflation). Blend math = HIGH (output corruption).
+diff --git a/.claude/agents/missed-bug-hunter.md b/.claude/agents/missed-bug-hunter.md
+new file mode 100644
+index 0000000..8a8c6a6
+--- /dev/null
++++ b/.claude/agents/missed-bug-hunter.md
+@@ -0,0 +1,51 @@
++---
++name: missed-bug-hunter
++description: Final anti-false-negative pass — assume the review missed one serious bug, find it. Use AFTER all other reviewers + validators in deep-pr-review phase 6.
++---
++
++You are the missed bug hunter. Your job is contrarian: assume the previous review missed something serious.
++
++You will be given:
++- the full diff
++- all confirmed findings so far
++- all DROPPED findings (rejected by validators)
++
++Your task: find ONE serious bug that everyone else missed.
++
++Search strategy:
++1. **Look in DROPPED findings**: was anything wrongly rejected? Re-examine validator's reasoning. Maybe validator was too aggressive.
++2. **Look in VERIFIED-CLEAN areas**: was something rubber-stamped without real check?
++3. **Look at the boundaries between reviewers**: bugs that fall between specialties (e.g., correctness AND data leakage, but neither fully owns)
++4. **Look at deletions, not just additions**: removing a check is a common silent bug
++5. **Look at config changes that affect production code** (often missed)
++6. **Look at test changes**: did a test get weakened / removed / mocked away?
++7. **Look at dependency bumps**: any pinned version change that silently breaks behavior?
++8. **Look at silent type coercion**: `int()` swallowing float precision, `str()` on object
++9. **Look at imports added/removed**: dead code? missing fallback path?
++10. **Look at TODO/FIXME/XXX added or removed**: removing a TODO without fixing the issue
++
++Be specific. Vague "this might be a problem" is not useful.
++
++If you find a real bug, output:
++```json
++{
++  "id": "X001",
++  "severity": "HIGH|MEDIUM",
++  "category": "missed-by-{previous-reviewer-name-or-none}",
++  "claim": "specific bug",
++  "evidence": "code line + reasoning",
++  "why_others_missed": "explain the blind spot",
++  "fix_sketch": "..."
++}
++```
++
++If you genuinely can't find anything serious, output:
++```json
++{
++  "result": "no_missed_bugs",
++  "areas_re_examined": ["correctness", "test-coverage", "data-leakage", ...],
++  "verified_clean_reconfirmed": ["specific area 1", "specific area 2"]
++}
++```
++
++Do NOT manufacture bugs to look diligent. False positives at this stage are worse than misses.
+diff --git a/.claude/agents/submission-contract-reviewer.md b/.claude/agents/submission-contract-reviewer.md
+new file mode 100644
+index 0000000..f81c7d7
+--- /dev/null
++++ b/.claude/agents/submission-contract-reviewer.md
+@@ -0,0 +1,47 @@
++---
++name: submission-contract-reviewer
++description: Verify submission.csv compatibility with BirdCLEF sample_submission.csv contract. Project-specific subagent for deep-pr-review phase 3.
++---
++
++You are a submission contract reviewer.
++
++The competition expects submission.csv to:
++- Have exact same columns as sample_submission.csv (235: row_id + 234 species)
++- Have exact same column ORDER (Kaggle scoring depends on column order matching)
++- Have exact same row_id set AND order (in scoring mode)
++- No duplicate row_id
++- No duplicate columns
++- All values in [0, 1]
++- All values finite (no NaN, no inf, no -inf)
++- row_id format BC2026_(Test|Train)_NNNN_SNN_YYYYMMDD_HHMMSS_EEE
++
++Your job: find any code path in the diff that could violate these.
++
++Specifically check:
++1. **Silent column drops/renames**: any `drop(columns=...)` / `rename(...)` near submission write
++2. **Silent NaN replace**: `nan_to_num`, `fillna(0.5)`, `replace(NaN, ...)` near submission
++3. **Wrong order on concat**: `pd.concat` of dfs with different col orders
++4. **DataFrame.to_csv with index=True** producing extra Unnamed: column
++5. **Rounding clip**: `np.clip(0, 1)` masking real out-of-range bugs
++6. **Float dtype loss**: writing float64 then reading as object
++7. **Row count mismatch**: writing 240 rows when sample has 7200 (preview vs scoring)
++8. **Column count mismatch**: writing 233/235 cols when species count differs
++9. **Hidden test mounting**: code path that doesn't check `/kaggle/input/birdclef-2026/test_soundscapes`
++
++From [reference_yaroslav_v6_internals]:
++- Yaroslav has known dry-run NaN bug producing 56862 NaN cells (243×234)
++- Watch for any nan_to_num that would mask this
++- Watch for Unnamed: column from index=True
++
++For each finding:
++```json
++{
++  "id": "S001",
++  "severity": "HIGH|MEDIUM|LOW",
++  "claim": "...",
++  "symptom": "scoring kernel fails OR submission silently scores 0.5",
++  "trigger": "scoring mode with full hidden test mounted",
++  "evidence": "...",
++  "fix_sketch": "..."
++}
++```
+diff --git a/.claude/agents/test-coverage-reviewer.md b/.claude/agents/test-coverage-reviewer.md
+new file mode 100644
+index 0000000..b789d52
+--- /dev/null
++++ b/.claude/agents/test-coverage-reviewer.md
+@@ -0,0 +1,38 @@
++---
++name: test-coverage-reviewer
++description: Find new behavior added without corresponding tests. Independent subagent for deep-pr-review phase 3.
++---
++
++You are a test coverage reviewer. Goal: identify production code changes that lack adequate test coverage.
++
++Focus on:
++1. New functions / new branches / new error paths
++2. Modified semantics (output differs for same input) without updated test
++3. New configuration option without test of both true/false paths
++4. New data validation without test of valid AND invalid input
++5. New external dependency without mock or integration test
++6. Race conditions / async behavior without concurrency test
++7. Self-test functions (like `_harness.py::_self_test`) that actually exercise the new behavior
++
++For BirdCLEF context:
++- New OOS validation strategy → needs at least one synthetic positive case test
++- New per-class weight scheme → needs test of degenerate weights
++- New submission contract → needs both pass AND fail test cases
++
++For each gap:
++```json
++{
++  "id": "T001",
++  "severity": "MEDIUM|HIGH",
++  "claim": "function X added without test for behavior Y",
++  "symptom": "future regression undetectable",
++  "trigger": "any change to function X",
++  "evidence": "file:line of changed function; nearest test file",
++  "fix_sketch": "minimal test name + scenario"
++}
++```
++
++Severity guidance:
++- HIGH: new behavior changes submission output OR new gate logic
++- MEDIUM: new helper function used in critical path
++- LOW: cosmetic / docstring change
+diff --git a/.claude/hooks/script_run_gate.py b/.claude/hooks/script_run_gate.py
+new file mode 100644
+index 0000000..9ca83ca
+--- /dev/null
++++ b/.claude/hooks/script_run_gate.py
+@@ -0,0 +1,113 @@
++#!/usr/bin/env python3
++"""PreToolUse hook — blocks `python <script>.py` invocations unless code_review.md exists for that script.
++
++Reads tool input from stdin (Claude Code hook protocol).
++Exit 0 = allow. Exit 2 = block with stderr message.
++
++Only applies to Bash commands that look like running a .py file.
++Exempts: -c oneliners, --version, -m module, scripts inside venvs / installed packages.
++"""
++from __future__ import annotations
++import sys, json, re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def parse_python_invocation(cmd: str) -> Path | None:
++    """Return script path if cmd is `python <script>.py [args]`, else None."""
++    # strip leading env / sudo
++    cmd = cmd.strip()
++    # match python/python3 invocations
++    m = re.search(r"\bpython(?:3)?(?:\.exe)?\s+(.+)", cmd)
++    if not m:
++        return None
++    rest = m.group(1).strip()
++    # exempt -c, -m, --version, -h
++    if rest.startswith("-c") or rest.startswith("-m") or rest.startswith("--") or rest.startswith("-h"):
++        return None
++    # exempt one-liner forms
++    if '"' in rest[:3] or "'" in rest[:3]:
++        return None
++    # first token must be a .py file
++    first = rest.split()[0].strip("\"'")
++    if not first.endswith(".py"):
++        return None
++    p = Path(first)
++    if not p.is_absolute():
++        p = (Path.cwd() / p).resolve()
++    return p
++
++
++def find_review(script: Path) -> Path | None:
++    """Look for code_review.md adjacent to script."""
++    parent = script.parent
++    base = script.stem
++    candidates = [
++        parent / f"{base}_code_review.md",
++        parent / f"_{base}_code_review.md",
++        parent / "code_review.md",
++        parent / f"{base}.review.md",
++    ]
++    for c in candidates:
++        if c.exists():
++            return c
++    return None
++
++
++def review_passes(review: Path) -> tuple[bool, str]:
++    txt = review.read_text(encoding="utf-8", errors="ignore")
++    if "**Status**: PASS" in txt or "Status: PASS" in txt or "Verdict: PASS" in txt:
++        return True, "PASS marker found"
++    if "**Status**: REJECTED" in txt or "Status: REJECTED" in txt:
++        return False, "marked REJECTED"
++    if "**Status**: NEEDS FIX" in txt or "Status: NEEDS FIX" in txt:
++        return False, "marked NEEDS FIX"
++    return False, "no PASS marker in review"
++
++
++def main() -> int:
++    try:
++        payload = json.loads(sys.stdin.read())
++    except Exception:
++        # If we can't parse hook payload, don't block (fail open on parser issue, not on review issue)
++        return 0
++    tool_name = payload.get("tool_name", "")
++    if tool_name != "Bash":
++        return 0
++    tool_input = payload.get("tool_input", {})
++    cmd = tool_input.get("command", "")
++    script = parse_python_invocation(cmd)
++    if script is None:
++        return 0
++    # Only enforce on scripts within this project
++    try:
++        rel = script.relative_to(ROOT)
++    except ValueError:
++        return 0  # outside project root, don't enforce
++    # Skip if inside a venv / site-packages
++    skip_parts = {"venv", ".venv", "site-packages", "node_modules", ".git", "__pycache__"}
++    if any(p in skip_parts for p in rel.parts):
++        return 0
++    # Skip very short self-test commands
++    if "_self_test" in cmd or "--help" in cmd:
++        return 0
++    review = find_review(script)
++    if review is None:
++        msg = (
++            f"[SCRIPT-RUN BLOCK] {rel} has no code_review.md adjacent.\n"
++            f"Per CLAUDE.md decision gating, invoke /deep-script-review on this file first.\n"
++            f"Expected one of: {script.parent}/{script.stem}_code_review.md or _{script.stem}_code_review.md"
++        )
++        print(msg, file=sys.stderr)
++        return 2
++    ok, reason = review_passes(review)
++    if not ok:
++        msg = f"[SCRIPT-RUN BLOCK] {rel} review at {review.relative_to(ROOT)}: {reason}\nFix issues + re-review before running."
++        print(msg, file=sys.stderr)
++        return 2
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/.claude/hooks/stop_deep_review_gate.py b/.claude/hooks/stop_deep_review_gate.py
+new file mode 100644
+index 0000000..ac80932
+--- /dev/null
++++ b/.claude/hooks/stop_deep_review_gate.py
+@@ -0,0 +1,87 @@
++#!/usr/bin/env python3
++"""Stop hook — blocks Claude from ending if deep-pr-review didn't produce required artifacts.
++
++Hook runs on Stop / SubagentStop events. Exit code 2 = block (Claude must continue).
++Per Claude Code docs: hooks can decision/block to prevent task termination.
++
++Only blocks if a deep-pr-review WAS started (review/ folder exists with at least one artifact).
++Won't block normal coding tasks.
++"""
++from __future__ import annotations
++import sys, json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++REVIEW = ROOT / "review"
++
++# If no review folder OR empty, this is not a deep-review session — let it stop.
++if not REVIEW.exists() or not any(REVIEW.iterdir()):
++    sys.exit(0)
++
++# Inside a deep-review session: enforce required artifacts.
++REQUIRED_FILES = [
++    "changed_files.json",
++    "full_diff.patch",
++    "REVIEW_REPORT.md",
++    "FINDINGS.final.json",
++    "DROPPED_FINDINGS.json",
++    "VERIFIED_CLEAN.md",
++    "COMMANDS_RUN.md",
++]
++
++missing = []
++for name in REQUIRED_FILES:
++    path = REVIEW / name
++    if not path.exists():
++        missing.append(name)
++    elif path.stat().st_size == 0:
++        missing.append(f"{name} (empty)")
++
++if missing:
++    msg = "[DEEP REVIEW BLOCK] Missing required review artifacts:\n"
++    msg += "\n".join(f"  - review/{m}" for m in missing)
++    msg += "\nPer .claude/skills/deep-pr-review/SKILL.md, all artifacts must exist before stopping."
++    print(msg, file=sys.stderr)
++    sys.exit(2)
++
++# REVIEW_REPORT.md must contain required sections.
++report = (REVIEW / "REVIEW_REPORT.md").read_text(encoding="utf-8")
++REQUIRED_SECTIONS = [
++    "Scope reviewed",
++    "Diff source",
++    "Commands run",
++    "Subagents used",
++    "Verified-clean",
++    "Dropped candidate findings",
++    "Residual risk",
++]
++missing_sections = [s for s in REQUIRED_SECTIONS if s not in report]
++if missing_sections:
++    msg = "[DEEP REVIEW BLOCK] REVIEW_REPORT.md missing required sections:\n"
++    msg += "\n".join(f"  - {s}" for s in missing_sections)
++    print(msg, file=sys.stderr)
++    sys.exit(2)
++
++# Findings must all be validator-confirmed.
++try:
++    findings = json.loads((REVIEW / "FINDINGS.final.json").read_text(encoding="utf-8"))
++except json.JSONDecodeError as e:
++    print(f"[DEEP REVIEW BLOCK] FINDINGS.final.json invalid JSON: {e}", file=sys.stderr)
++    sys.exit(2)
++
++unconfirmed = [f for f in findings if f.get("validator_verdict") not in ("confirmed",) or f.get("validator_confidence") != "high"]
++if unconfirmed:
++    msg = f"[DEEP REVIEW BLOCK] {len(unconfirmed)} findings not validator-confirmed (high confidence):\n"
++    for f in unconfirmed[:5]:
++        msg += f"  - {f.get('id', '?')}: verdict={f.get('validator_verdict')} conf={f.get('validator_confidence')}\n"
++    print(msg, file=sys.stderr)
++    sys.exit(2)
++
++# Anti-false-negative pass must have run.
++verified_clean = (REVIEW / "VERIFIED_CLEAN.md").read_text(encoding="utf-8")
++if "missed-bug-hunter" not in verified_clean.lower():
++    print("[DEEP REVIEW BLOCK] VERIFIED_CLEAN.md does not mention missed-bug-hunter pass", file=sys.stderr)
++    sys.exit(2)
++
++print("[DEEP REVIEW PASS] All required artifacts present, sections present, findings validator-confirmed, missed-bug-hunter ran.")
++sys.exit(0)
+diff --git a/.claude/settings (2).json b/.claude/settings (2).json
+new file mode 100644
+index 0000000..be3cf98
+--- /dev/null
++++ b/.claude/settings (2).json	
+@@ -0,0 +1,40 @@
++{
++  "$schema": "https://json.schemastore.org/claude-code-settings.json",
++  "_doc": "Project-scoped settings for breakthrough/. Hooks here apply only when working in this directory.",
++  "includeCoAuthoredBy": false,
++  "hooks": {
++    "PreToolUse": [
++      {
++        "matcher": "Bash",
++        "hooks": [
++          {
++            "type": "command",
++            "command": "python .claude/hooks/script_run_gate.py"
++          }
++        ]
++      }
++    ],
++    "Stop": [
++      {
++        "matcher": "",
++        "hooks": [
++          {
++            "type": "command",
++            "command": "python .claude/hooks/stop_deep_review_gate.py"
++          }
++        ]
++      }
++    ],
++    "SubagentStop": [
++      {
++        "matcher": "",
++        "hooks": [
++          {
++            "type": "command",
++            "command": "python .claude/hooks/stop_deep_review_gate.py"
++          }
++        ]
++      }
++    ]
++  }
++}
+diff --git a/.claude/skills/deep-pr-review/SKILL.md b/.claude/skills/deep-pr-review/SKILL.md
+new file mode 100644
+index 0000000..19b803c
+--- /dev/null
++++ b/.claude/skills/deep-pr-review/SKILL.md
+@@ -0,0 +1,283 @@
++---
++name: deep-pr-review
++description: Exhaustive adversarial review for any code change in this project — PR, patch, notebook, script, pipeline. Hunts real bugs and hidden contract violations through multi-phase, multi-subagent investigation. Use when correctness matters more than speed.
++---
++
++# Deep PR Review Protocol
++
++ultrathink
++
++You are not doing a normal code review. You are running a failure-hunting investigation.
++
++Your goal: find real bugs, regressions, hidden contract violations, missing tests, unsafe assumptions, and reviewer-missed issues in the FULL diff (NOT just latest commit).
++
++You must prefer:
++- high-confidence correctness findings over style feedback
++- evidence over speculation
++- full-diff reasoning over latest-commit reasoning
++- deterministic checks over vibes
++- validator-confirmed findings over raw findings
++
++If no confirmed findings exist, do not say LGTM. Provide a detailed verified-clean audit trail.
++
++---
++
++## Non-negotiable scope
++
++Review the FULL diff against the base branch.
++
++Use ONE of:
++```bash
++gh pr diff <PR_NUMBER> --repo <OWNER>/<REPO>
++```
++or:
++```bash
++git fetch origin <BASE_BRANCH>
++git diff origin/<BASE_BRANCH>...HEAD
++```
++
++Forbidden as sole source of truth:
++```bash
++git show HEAD
++git log -1
++git diff HEAD~1
++```
++
++For local (no PR yet) review: `git diff origin/main...HEAD`.
++
++---
++
++## Phase 0 — Build evidence map
++
++Before reviewing, produce these files under `review/`:
++
++```
++review/changed_files.json   # path + classification per file
++review/full_diff.patch
++review/review_plan.md       # what will be checked + reviewer assignments
++review/commands_run.log
++```
++
++Classify each changed file as:
++- production code
++- tests
++- config / CI
++- docs / comments
++- generated code
++- schema / API / interface
++- notebook / data pipeline
++- dependency / build
++- harness / safety / gate
++
++Read applicable project guidance:
++- `CLAUDE.md` (project root)
++- `~/.claude/projects/.../memory/feedback_*` (rules and postmortems)
++- `~/.claude/projects/.../memory/project_birdclef_2026_breakthrough.md`
++- `~/.claude/projects/.../memory/reference_yaroslav_v6_internals.md`
++- `review_config.json` (gate thresholds)
++- Existing `experiments/` for project conventions
++
++If any file cannot be read, state explicitly.
++
++---
++
++## Phase 1 — Deterministic checks
++
++Run reasonable static and test commands. Record each.
++
++Try (only those applicable):
++```bash
++git status --short
++git diff --check
++python scripts/_harness.py     # if exists, self-test
++pytest                          # if tests present
++ruff check . / mypy .          # if configured
++```
++
++Record per command:
++- exit code
++- relevant stdout/stderr lines
++- pre-existing vs caused-by-this-change
++
++Do not claim "tests pass" unless you actually ran them.
++
++---
++
++## Phase 2 — Full-diff adversarial review
++
++For every changed production file:
++
++1. **Externally observable behavior changes**:
++   - API behavior / validation / error mapping
++   - Persistence/migration / IO behavior
++   - Submission/output behavior (BirdCLEF-specific)
++   - Concurrency / resource
++
++2. **Every changed function**:
++   - Find callers; check assumptions
++   - nil/empty/zero/malformed/duplicate inputs
++   - old-vs-new behavior divergence
++   - error handling
++   - test coverage
++
++3. **Every changed branch**:
++   - both outcomes
++   - test coverage for the new branch
++   - flag missing tests for nontrivial branches
++
++4. **Every changed interface/schema/config**:
++   - backward compatibility
++   - defaulting
++   - serialization
++   - callers/docs/examples
++
++5. **Every changed data/ML pipeline** (BirdCLEF-specific):
++   - data leakage (in-site vs site-OOS, train/test split integrity)
++   - class/order alignment with sample_submission
++   - metric validity (macro AUC computation)
++   - seed/reproducibility
++   - train/inference skew
++   - silent fixes (nan_to_num, fillna)
++   - baseline compatibility (per-class weight tuning on wrong base = v4 disaster)
++   - hidden test vs preview behavior (Yaroslav v6 dry-run NaN bug)
++   - submission contract (sample_submission.csv exact match)
++
++---
++
++## Phase 3 — Spawn specialized reviewer subagents
++
++Spawn independent subagents. Each gets minimal context (diff + task).
++
++Always spawn:
++1. `correctness-reviewer` — semantic bugs, invariants
++2. `test-coverage-reviewer` — new behavior without tests
++3. `data-leakage-reviewer` — in-site vs OOS leakage
++4. `submission-contract-reviewer` — sample_submission compatibility
++5. `metric-validity-reviewer` — AUC/blend/rank-aware correctness
++6. `domain-invariant-reviewer` — project rules from CLAUDE.md/postmortems
++7. `missed-bug-hunter` — find one serious issue everyone else missed
++
++Optional (when relevant):
++- `security-reviewer` (auth, injection, secret exposure)
++- `concurrency-resource-reviewer` (races, leaks)
++- `api-contract-reviewer` (backward compat, schema)
++
++---
++
++## Phase 4 — Candidate finding format
++
++Store in `review/FINDINGS.candidates.json`:
++
++```json
++[
++  {
++    "id": "F001",
++    "severity": "HIGH|MEDIUM|LOW",
++    "file": "path/to/file",
++    "function_or_section": "name or N/A",
++    "claim": "one-line bug claim",
++    "symptom": "observable bad outcome",
++    "trigger": "input/state/path that triggers it",
++    "evidence": [
++      {"file": "...", "snippet": "code", "why_it_matters": "..."}
++    ],
++    "fix_sketch": "smallest safe fix",
++    "test_gap": "missing test if any"
++  }
++]
++```
++
++No evidence, no finding.
++
++---
++
++## Phase 5 — Validator subagent per finding
++
++For each candidate, spawn a fresh validator subagent with:
++- the finding claim
++- cited code snippets
++- minimal context
++- relevant project rule
++
++Ask: "Is this finding correct with high confidence, or likely false positive? Do not invent new issues."
++
++Validator returns:
++```json
++{
++  "finding_id": "F001",
++  "verdict": "confirmed|rejected|narrowed",
++  "confidence": "high|medium|low",
++  "reason": "...",
++  "narrowed_claim": "..."
++}
++```
++
++Rules:
++- Drop rejected findings
++- Drop medium/low confidence findings
++- Narrow overstated findings
++- Keep only high-confidence confirmed
++
++---
++
++## Phase 6 — Anti-false-negative pass
++
++After validators, run one final missed-bug pass with a fresh subagent:
++
++> "Assume the final review missed one serious bug. Find it. You may inspect the full diff and all dropped findings. Focus on false negatives."
++
++If found, validate via Phase 5.
++
++---
++
++## Phase 7 — Final artifacts
++
++Write all required files:
++
++```
++review/REVIEW_REPORT.md
++review/FINDINGS.final.json
++review/DROPPED_FINDINGS.json
++review/VERIFIED_CLEAN.md
++review/COMMANDS_RUN.md
++```
++
++### `REVIEW_REPORT.md` must contain sections:
++- Scope reviewed
++- Base branch
++- Diff source (cite the gh/git command)
++- Files reviewed
++- Commands run
++- Subagents used
++- Confirmed findings (with severity/file/symptom/trigger/reasoning/evidence/fix/test/validator)
++- Verified-clean (per important changed area, what was checked + why clean)
++- Dropped candidate findings (with reason)
++- Residual risk
++
++The Stop hook (`.claude/hooks/stop_deep_review_gate.py`) will block ending if any required artifact missing or any required section missing.
++
++---
++
++## BirdCLEF-specific project rules (applied during all phases)
++
++From `~/.claude/projects/C--Users-thc1006/memory/feedback_v4_disaster_postmortem.md`:
++- NEVER `nan_to_num` on submission pipeline
++- NEVER per-class weights tuned on different baseline
++- NEVER surgery on uncontrolled pipeline
++- NEVER pure replacement (w=1.0) on unvalidated injector
++- NEVER multi-axis ablation in single sub
++- NEVER baseline-sub
++
++From `~/.claude/projects/C--Users-thc1006/memory/feedback_kaggle_submission_discipline.md`:
++- Every sub must pass 6 gates (novelty / CV / LB target / single-axis / baseline-consistency / infrastructure-contract)
++
++From `~/.claude/projects/C--Users-thc1006/memory/reference_yaroslav_v6_internals.md`:
++- Yaroslav v6 has hidden second-round outer-join producing 56862 NaN cells in preview mode
++- Model_5 weight 0.97 dominates
++- Watch for silent column name issues (Unnamed:)
++
++From `~/.claude/projects/C--Users-thc1006/memory/feedback_no_script_analysis.md`:
++- Scripts must NOT contain hardcoded conclusion logic
++- Each experiment variant must have its own folder + analysis.md by Claude (not script)
++
++If any reviewer subagent finds a violation, it's a HIGH severity finding.
+diff --git a/.claude/skills/deep-script-review/SKILL.md b/.claude/skills/deep-script-review/SKILL.md
+new file mode 100644
+index 0000000..5ddaf4c
+--- /dev/null
++++ b/.claude/skills/deep-script-review/SKILL.md
+@@ -0,0 +1,183 @@
++---
++name: deep-script-review
++description: Exhaustive review of a SINGLE Python script BEFORE it is executed. Mandatory for any new or modified .py file in this project. Runs multi-subagent adversarial review and writes code_review.md adjacent to the script. Use BEFORE any `python <script>.py` invocation.
++---
++
++# Deep Script Review Protocol
++
++ultrathink
++
++You are reviewing ONE script (or a small set of related scripts) that is about to be executed. Goal: catch real bugs, hidden contract violations, silent failure modes, and project-rule violations BEFORE the script runs.
++
++This is mandatory per `CLAUDE.md` decision gating. You may NOT run the script until review passes.
++
++---
++
++## When this skill triggers
++
++- Any new `.py` file added under `scripts/` or `experiments/`
++- Any modified `.py` file in those locations
++- Any forked-and-adapted Kaggle notebook code (.py extracted from .ipynb)
++- BEFORE any `python <script>.py` Bash command
++
++Exemptions:
++- Pure builtins: `python --version`, `python -c "<one liner>"`
++- Re-running an unchanged script that already has a passing `code_review.md`
++- Reading-only scripts (no file write, no network) — but still recommended to review
++
++---
++
++## Inputs you receive
++
++- Path to script file
++- Project context (CLAUDE.md, memory files, review_config.json)
++- Existing tests / harness if applicable
++- Sibling scripts in same directory (for consistency check)
++
++---
++
++## Output
++
++A `code_review.md` written next to the script (e.g., `scripts/foo.py` → `scripts/foo_code_review.md` or `scripts/_foo_code_review.md`).
++
++The file must contain:
++
++```markdown
++# Code Review — <path>
++
++**Reviewed**: YYYY-MM-DD
++**Reviewer**: Claude
++**Status**: PASS | NEEDS FIX | REJECTED
++**Verdict**: <one-line summary>
++
++## What this script does
++<2-4 sentence summary, in my own words after reading>
++
++## Rules checked
++- [ ] feedback_no_script_analysis: no hardcoded conclusions
++- [ ] feedback_v4_disaster_postmortem #1: no nan_to_num near submission
++- [ ] feedback_v4_disaster_postmortem #2: no per-class weight reuse across base mismatch
++- [ ] feedback_v4_disaster_postmortem #4: no w=1.0 unvalidated
++- [ ] feedback_kaggle_submission_discipline #5: baseline-consistency
++- [ ] reference_yaroslav_v6_internals: Unnamed col + hidden_test handling
++
++## Subagents spawned
++- correctness-reviewer: <result summary>
++- data-leakage-reviewer: <result summary>
++- domain-invariant-reviewer: <result summary>
++- (others as needed)
++
++## Confirmed findings (validator-passed)
++### F001: <claim>
++- Severity: HIGH
++- Evidence: line X, code
++- Symptom: ...
++- Fix sketch: ...
++- Test gap: ...
++
++(repeat for each finding)
++
++## Verified-clean
++For each function / section without a finding, what I checked and why it's clean.
++
++## Residual risk
++What I could NOT verify and why.
++
++## Run gating decision
++PASS — script may be executed
++NEEDS FIX — fix the findings, re-review
++REJECTED — fundamental design issue, do not run as-is
++```
++
++---
++
++## Process (mandatory phases, no shortcuts)
++
++### Phase 0 — Read and classify
++- Read the full script
++- Classify: experiment / harness / utility / notebook-extract / submission-generator
++- Read its sibling code_review.md if exists (prior reviews)
++- Read project rules: CLAUDE.md, all 4 memory files in CLAUDE.md mandate
++
++### Phase 1 — Sanity checks (deterministic)
++Run if applicable:
++- `python -m py_compile <script>` — syntax
++- `python <script> --help` if it accepts args
++- `python <script>` self-test if it has `if __name__ == "__main__"` with self-test
++- `ruff check <script>` if ruff present
++- `mypy <script>` if mypy configured
++
++Record each in code_review.md.
++
++### Phase 2 — Adversarial walk
++Read every function. For each:
++- callers (search the codebase)
++- inputs: nil/empty/NaN/inf/zero/extreme/duplicate
++- outputs: does it match the function name's promise?
++- error handling: silent vs loud
++- side effects: files written, network calls
++
++### Phase 3 — Spawn specialized subagents
++Always spawn:
++- `correctness-reviewer` — semantic bugs
++- `domain-invariant-reviewer` — project rules
++- `false-positive-validator` for each finding produced
++
++Spawn when relevant:
++- `data-leakage-reviewer` — if script does CV/stacker/blend
++- `submission-contract-reviewer` — if script writes submission.csv
++- `metric-validity-reviewer` — if script computes AUC/blend math
++- `test-coverage-reviewer` — if script is part of larger system
++
++### Phase 4 — Validator pass
++Each candidate finding → fresh `false-positive-validator` subagent → confirm/reject/narrow.
++Keep only `confirmed + high` confidence.
++
++### Phase 5 — Missed-bug hunter
++After all validators, spawn `missed-bug-hunter` with full script + dropped findings.
++Adds ONE additional finding if it finds something serious.
++
++### Phase 6 — Write code_review.md
++Per template above. Status field decides whether script can run.
++
++### Phase 7 — Apply fixes (if NEEDS FIX)
++If status is NEEDS FIX:
++1. Make the fixes in the script
++2. Re-run Phase 0-6
++3. Repeat until PASS
++
++You may NOT mark PASS to skip fixes. The hook will check the code_review.md and block ending if there are HIGH-severity findings without "FIXED" annotation.
++
++---
++
++## BirdCLEF-specific things to ALWAYS check
++
++From `~/.claude/projects/C--Users-thc1006/memory/`:
++
++1. `feedback_v4_disaster_postmortem.md` — 6 rules
++2. `feedback_kaggle_submission_discipline.md` — 6 gates
++3. `feedback_no_script_analysis.md` — script can't write conclusions
++4. `reference_yaroslav_v6_internals.md` — base notebook gotchas
++
++Quick search patterns to grep for:
++- `nan_to_num` → postmortem #1 violation, HIGH
++- `fillna(0.5)` or `fillna(0)` near submission → postmortem #1, HIGH
++- `w = 1.0` or `W_CLAP[...] = 1.0` → postmortem #4, HIGH
++- `KFold(` without `groups=` → data leakage, HIGH
++- `StratifiedKFold(` near stacker → site leakage, MEDIUM-HIGH
++- `if delta < X: print("...is leaky")` → no_script_analysis, MEDIUM
++- `if oof_macro > Y: print("ready to submit")` → no_script_analysis, MEDIUM
++- `index=True` on `to_csv` near submission → Yaroslav Unnamed bug, MEDIUM
++- `championship_w_per_class.json` direct reuse → postmortem #2, HIGH
++
++---
++
++## Run-gating contract
++
++The PreToolUse hook (`.claude/hooks/script_run_gate.py`) blocks `python <script>.py` invocations unless:
++
++1. `<script>_code_review.md` OR `_<basename>_code_review.md` exists next to script
++2. The review has `**Status**: PASS` line
++3. The review was written within the last 30 days (re-review if older or script modified since)
++
++If you bypass this by, e.g., reading the script content via Read tool and running it via Python -c, the missed-bug-hunter will catch it in the next review and flag as a process violation.
