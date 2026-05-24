@@ -70,14 +70,14 @@ Classify each changed file as:
 - harness / safety / gate
 
 Read applicable project guidance:
-- `CLAUDE.md` (project root)
-- `~/.claude/projects/.../memory/feedback_*` (rules and postmortems)
-- `~/.claude/projects/.../memory/project_birdclef_2026_breakthrough.md`
-- `~/.claude/projects/.../memory/reference_yaroslav_v6_internals.md`
-- `review_config.json` (gate thresholds)
-- Existing `experiments/` for project conventions
+- `CLAUDE.md` (project root) — always
+- `AGENTS.md`, `README.md` — when present
+- `review_config.json` (gate thresholds) — when present
+- Project-specific memory under `~/.claude/projects/.../memory/` — only when the
+  current repo opts in via a project marker (see "Project-specific rules" at the
+  bottom of this file). Do NOT inject memory from unrelated projects.
 
-If any file cannot be read, state explicitly.
+If any required file cannot be read, state explicitly.
 
 ---
 
@@ -148,19 +148,26 @@ For every changed production file:
 
 Spawn independent subagents. Each gets minimal context (diff + task).
 
-Always spawn:
+Always spawn (project-agnostic):
 1. `correctness-reviewer` — semantic bugs, invariants
 2. `test-coverage-reviewer` — new behavior without tests
-3. `data-leakage-reviewer` — in-site vs OOS leakage
-4. `submission-contract-reviewer` — sample_submission compatibility
-5. `metric-validity-reviewer` — AUC/blend/rank-aware correctness
-6. `domain-invariant-reviewer` — project rules from CLAUDE.md/postmortems
-7. `missed-bug-hunter` — find one serious issue everyone else missed
+3. `missed-bug-hunter` — find one serious issue everyone else missed
 
-Optional (when relevant):
-- `security-reviewer` (auth, injection, secret exposure)
+Spawn when the diff is in scope:
+- `security-reviewer` (auth, injection, secret exposure, prompt/tool injection)
 - `concurrency-resource-reviewer` (races, leaks)
 - `api-contract-reviewer` (backward compat, schema)
+
+Spawn ONLY when a project marker indicates the relevant domain. Do not spawn
+domain-specific subagents on generic repos — they will produce vacuous "no risk"
+output for every diff and waste the missed-bug-hunter's budget.
+
+- ML / Kaggle pipelines (marker: `birdclef-2026-data.json`, or `pyproject.toml`
+  declaring kaggle-related deps, or an `experiments/` directory used for CV runs):
+  - `data-leakage-reviewer` — in-site vs OOS leakage
+  - `submission-contract-reviewer` — sample_submission compatibility
+  - `metric-validity-reviewer` — AUC/blend/rank-aware correctness
+  - `domain-invariant-reviewer` — project rules from CLAUDE.md/postmortems
 
 ---
 
@@ -258,7 +265,12 @@ The Stop hook (`.claude/hooks/stop_deep_review_gate.py`) will block ending if an
 
 ---
 
-## BirdCLEF-specific project rules (applied during all phases)
+## Project-specific rules (applied ONLY when the corresponding marker is present)
+
+The block below is loaded only when the active repo opts in. On a generic
+Claude Code resource repo (no marker file), skip this section entirely.
+
+### BirdCLEF (marker: `birdclef-2026-data.json` in repo root, OR working in `~/.claude/projects/C--Users-thc1006*`)
 
 From `~/.claude/projects/C--Users-thc1006/memory/feedback_v4_disaster_postmortem.md`:
 - NEVER `nan_to_num` on submission pipeline

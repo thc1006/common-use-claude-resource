@@ -120,14 +120,19 @@ Read every function. For each:
 ### Phase 3 — Spawn specialized subagents
 Always spawn:
 - `correctness-reviewer` — semantic bugs
-- `domain-invariant-reviewer` — project rules
 - `false-positive-validator` for each finding produced
 
-Spawn when relevant:
+Spawn when the script is in scope:
+- `test-coverage-reviewer` — if script is part of larger system
+- `security-reviewer` — if script touches network, filesystem, secrets, shell
+
+Spawn ONLY when a project marker indicates the relevant domain (see
+"Project-specific things to check" below — do NOT spawn domain reviewers on
+generic Claude Code resource repos):
+- `domain-invariant-reviewer` — project rules from CLAUDE.md/postmortems
 - `data-leakage-reviewer` — if script does CV/stacker/blend
 - `submission-contract-reviewer` — if script writes submission.csv
 - `metric-validity-reviewer` — if script computes AUC/blend math
-- `test-coverage-reviewer` — if script is part of larger system
 
 ### Phase 4 — Validator pass
 Each candidate finding → fresh `false-positive-validator` subagent → confirm/reject/narrow.
@@ -150,7 +155,11 @@ You may NOT mark PASS to skip fixes. The hook will check the code_review.md and 
 
 ---
 
-## BirdCLEF-specific things to ALWAYS check
+## Project-specific things to check (applied ONLY when the marker is present)
+
+Generic Claude Code resource repos have no marker; skip this section entirely.
+
+### BirdCLEF (marker: `birdclef-2026-data.json` in repo root, OR working in `~/.claude/projects/C--Users-thc1006*`)
 
 From `~/.claude/projects/C--Users-thc1006/memory/`:
 

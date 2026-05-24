@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Stop hook — blocks Claude from ending if deep-pr-review didn't produce required artifacts.
 
-Hook runs on Stop / SubagentStop events. Exit code 2 = block (Claude must continue).
-Per Claude Code docs: hooks can decision/block to prevent task termination.
+Hook runs on Stop events. Exit code 2 = block (Claude must continue).
 
-Only blocks if a deep-pr-review WAS started (review/ folder exists with at least one artifact).
-Won't block normal coding tasks.
+Safety rails (avoid the infinite-loop class of bug filed as anthropics/claude-code#55754):
+1. If invoked for SubagentStop, exit 0 immediately. Phase-3 reviewer subagents
+   stop BEFORE final artifacts exist by design; enforcing here would deadlock them.
+   Enforcement happens on the top-level Stop event only.
+2. If stop_hook_active is true, Claude is already in a forced-continuation state
+   from a previous block — exit 0 to break the loop and surface the issue to the
+   user instead of burning the session.
+
+Only enforces when a deep-pr-review WAS started (review/ folder exists with at
+least one artifact). Won't block normal coding tasks.
 """
 from __future__ import annotations
 import sys, json
@@ -14,11 +21,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REVIEW = ROOT / "review"
 
+
+def _read_payload() -> dict:
+    try:
+        return json.loads(sys.stdin.read() or "{}")
+    except Exception:
+        return {}
+
+
+payload = _read_payload()
+
+# Safety rail 1: never block subagent termination.
+if payload.get("hook_event_name") == "SubagentStop":
+    sys.exit(0)
+
+# Safety rail 2: break forced-continuation loops.
+if payload.get("stop_hook_active") is True:
+    sys.exit(0)
+
 # If no review folder OR empty, this is not a deep-review session — let it stop.
 if not REVIEW.exists() or not any(REVIEW.iterdir()):
     sys.exit(0)
 
-# Inside a deep-review session: enforce required artifacts.
 REQUIRED_FILES = [
     "changed_files.json",
     "full_diff.patch",
@@ -44,13 +68,15 @@ if missing:
     print(msg, file=sys.stderr)
     sys.exit(2)
 
-# REVIEW_REPORT.md must contain required sections.
 report = (REVIEW / "REVIEW_REPORT.md").read_text(encoding="utf-8")
 REQUIRED_SECTIONS = [
     "Scope reviewed",
+    "Base branch",
     "Diff source",
+    "Files reviewed",
     "Commands run",
     "Subagents used",
+    "Confirmed findings",
     "Verified-clean",
     "Dropped candidate findings",
     "Residual risk",
@@ -62,7 +88,6 @@ if missing_sections:
     print(msg, file=sys.stderr)
     sys.exit(2)
 
-# Findings must all be validator-confirmed.
 try:
     findings = json.loads((REVIEW / "FINDINGS.final.json").read_text(encoding="utf-8"))
 except json.JSONDecodeError as e:
@@ -77,7 +102,6 @@ if unconfirmed:
     print(msg, file=sys.stderr)
     sys.exit(2)
 
-# Anti-false-negative pass must have run.
 verified_clean = (REVIEW / "VERIFIED_CLEAN.md").read_text(encoding="utf-8")
 if "missed-bug-hunter" not in verified_clean.lower():
     print("[DEEP REVIEW BLOCK] VERIFIED_CLEAN.md does not mention missed-bug-hunter pass", file=sys.stderr)
