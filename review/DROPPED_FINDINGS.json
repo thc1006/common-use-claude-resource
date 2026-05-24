@@ -1,0 +1,14 @@
+[
+  {
+    "id": "F001",
+    "reason": "Validator returned narrowed + medium confidence; relies on external loader behavior (settings file name) not verified in repo alone.",
+    "verdict": "narrowed",
+    "confidence": "medium"
+  },
+  {
+    "id": "F005",
+    "reason": "Validator confirmed but only medium confidence; missing tests recorded as a gap but not kept as high-confidence finding.",
+    "verdict": "confirmed",
+    "confidence": "medium"
+  }
+]

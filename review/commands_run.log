@@ -1,0 +1,16 @@
+ls
+pwd
+git --no-pager status --short
+git --no-pager branch -a
+git rev-parse --is-shallow-repository
+git fetch --unshallow origin
+git fetch origin main:refs/remotes/origin/main
+ls -a
+find . -maxdepth 2 -name 'review_config.json' -o -name 'CLAUDE.md'
+find . -maxdepth 3 -type f | cat
+git --no-pager diff origin/main...HEAD
+git --no-pager log --oneline -n 5
+git --no-pager diff 43ee075...HEAD
+git --no-pager diff --name-status 43ee075...HEAD
+git --no-pager diff --check 43ee075...HEAD
+ls -a ~/.claude/projects

@@ -1,0 +1,106 @@
+[
+  {
+    "id": "F002",
+    "severity": "HIGH",
+    "file": ".claude/hooks/script_run_gate.py",
+    "function_or_section": "parse_python_invocation",
+    "claim": "The python-run gate can be bypassed via interpreter flags or versioned executables.",
+    "symptom": "Unreviewed scripts can run by invoking `python -u script.py` or `python3.11 script.py`.",
+    "trigger": "Any Bash command where python flags appear before the script or the interpreter is versioned (python3.X).",
+    "evidence": [
+      {
+        "file": ".claude/hooks/script_run_gate.py",
+        "snippet": "m = re.search(r\"\\bpython(?:3)?(?:\\.exe)?\\s+(.+)\", cmd)\nrest = m.group(1).strip()\nif rest.startswith(\"-c\") or rest.startswith(\"-m\") or rest.startswith(\"--\") or rest.startswith(\"-h\"): return None\nfirst = rest.split()[0].strip(\"\\\"'\")\nif not first.endswith(\".py\"): return None",
+        "why_it_matters": "Flags or python3.X prevent detection, so the gate returns None and allows execution."
+      }
+    ],
+    "fix_sketch": "Use shlex.split, skip interpreter flags until the first non-flag token, and accept python3.X interpreter names.",
+    "test_gap": "No tests cover flag-prefixed invocations or python3.X executables.",
+    "validator_verdict": "confirmed",
+    "validator_confidence": "high",
+    "validator_reason": "Regex only matches python/python3; flags before script cause .py check to fail, so gate returns None."
+  },
+  {
+    "id": "F003",
+    "severity": "HIGH",
+    "file": ".claude/hooks/script_run_gate.py",
+    "function_or_section": "review validation",
+    "claim": "The gate does not enforce the deep-script-review recency/modified-since requirement.",
+    "symptom": "Stale PASS reviews allow running modified scripts without re-review.",
+    "trigger": "A script changes after a PASS review or a review older than 30 days.",
+    "evidence": [
+      {
+        "file": ".claude/skills/deep-script-review/SKILL.md",
+        "snippet": "The review was written within the last 30 days (re-review if older or script modified since)",
+        "why_it_matters": "The skill mandates freshness checks that the hook does not implement."
+      },
+      {
+        "file": ".claude/hooks/script_run_gate.py",
+        "snippet": "ok, reason = review_passes(review)\nif not ok: ...\nreturn 0",
+        "why_it_matters": "No timestamp or script-mtime comparison exists, so stale reviews pass."
+      }
+    ],
+    "fix_sketch": "Compare review mtime and script mtime; block if review older than 30 days or script newer than review.",
+    "test_gap": "No tests for stale review enforcement.",
+    "validator_verdict": "confirmed",
+    "validator_confidence": "high",
+    "validator_reason": "SKILL.md requires recency, but hook only checks PASS marker without mtime checks."
+  },
+  {
+    "id": "F004",
+    "severity": "HIGH",
+    "file": ".claude/hooks/stop_deep_review_gate.py",
+    "function_or_section": "REQUIRED_SECTIONS",
+    "claim": "The stop hook does not enforce all sections required by deep-pr-review SKILL.md.",
+    "symptom": "A REVIEW_REPORT.md missing Base branch / Files reviewed / Confirmed findings can still pass the stop gate.",
+    "trigger": "Deep review report missing those sections.",
+    "evidence": [
+      {
+        "file": ".claude/skills/deep-pr-review/SKILL.md",
+        "snippet": "REVIEW_REPORT.md must contain sections: Scope reviewed, Base branch, Diff source, Files reviewed, Commands run, Subagents used, Confirmed findings, Verified-clean, Dropped candidate findings, Residual risk",
+        "why_it_matters": "Skill mandates sections not enforced by the hook."
+      },
+      {
+        "file": ".claude/hooks/stop_deep_review_gate.py",
+        "snippet": "REQUIRED_SECTIONS = [\"Scope reviewed\", \"Diff source\", \"Commands run\", \"Subagents used\", \"Verified-clean\", \"Dropped candidate findings\", \"Residual risk\"]",
+        "why_it_matters": "Base branch, Files reviewed, Confirmed findings are omitted, weakening enforcement."
+      }
+    ],
+    "fix_sketch": "Add the missing sections to REQUIRED_SECTIONS to match SKILL.md.",
+    "test_gap": "No tests ensure section list matches the skill spec.",
+    "validator_verdict": "confirmed",
+    "validator_confidence": "high",
+    "validator_reason": "SKILL.md requires sections absent from REQUIRED_SECTIONS list."
+  },
+  {
+    "id": "X001",
+    "severity": "HIGH",
+    "file": ".claude/settings (2).json / .claude/hooks/stop_deep_review_gate.py",
+    "function_or_section": "SubagentStop hook",
+    "claim": "SubagentStop gating deadlocks deep-pr-review: subagents cannot stop once review/ exists but final artifacts are missing.",
+    "symptom": "Phase-3 reviewer subagents are blocked from stopping because stop_deep_review_gate.py exits 2 until Phase 7 artifacts exist.",
+    "trigger": "Deep-pr-review run after Phase 0 creates review/ and before Phase 7 artifacts are written.",
+    "evidence": [
+      {
+        "file": ".claude/settings (2).json",
+        "snippet": "\"SubagentStop\": [ { \"hooks\": [ { \"command\": \"python .claude/hooks/stop_deep_review_gate.py\" } ] } ]",
+        "why_it_matters": "Subagents will execute stop_deep_review_gate.py when stopping."
+      },
+      {
+        "file": ".claude/hooks/stop_deep_review_gate.py",
+        "snippet": "if not REVIEW.exists() or not any(REVIEW.iterdir()): sys.exit(0)\n... if missing: sys.exit(2)",
+        "why_it_matters": "Once review/ exists but required artifacts are missing, the hook blocks all stops."
+      },
+      {
+        "file": ".claude/skills/deep-pr-review/SKILL.md",
+        "snippet": "Phase 0: create review/ artifacts; Phase 3: spawn subagents; Phase 7: write final artifacts",
+        "why_it_matters": "Subagents stop before Phase 7, so the stop gate can deadlock them."
+      }
+    ],
+    "fix_sketch": "Remove SubagentStop hook or make stop_deep_review_gate.py ignore SubagentStop events until finalization.",
+    "test_gap": "No tests cover subagent stop behavior during deep-pr-review phases.",
+    "validator_verdict": "confirmed",
+    "validator_confidence": "high",
+    "validator_reason": "SubagentStop hook runs the stop gate while required files are missing, blocking subagent termination."
+  }
+]
